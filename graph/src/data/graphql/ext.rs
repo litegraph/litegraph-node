@@ -27,6 +27,10 @@ pub trait DocumentExt {
 
     fn get_object_type_definition(&self, name: &str) -> Option<&ObjectType>;
 
+    fn get_entity_definitions(&self) -> Vec<&ObjectType>;
+
+    fn get_schema_type_definition(&self) -> Option<&ObjectType>;
+
     fn get_object_and_interface_type_fields(&self) -> HashMap<&Name, &Vec<Field>>;
 
     fn get_enum_definitions(&self) -> Vec<&EnumType>;
@@ -51,6 +55,35 @@ impl DocumentExt for Document {
         self.get_object_type_definitions()
             .into_iter()
             .find(|object_type| object_type.name.eq(name))
+    }
+
+    fn get_entity_definitions(&self) -> Vec<&ObjectType> {
+        self.definitions
+            .iter()
+            .filter_map(|d| match d {
+                Definition::TypeDefinition(TypeDefinition::Object(t))
+                    if !t.name.eq(SCHEMA_TYPE_NAME) =>
+                {
+                    Some(t)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn get_schema_type_definition(&self) -> Option<&ObjectType> {
+        self.definitions
+            .iter()
+            .find(|d| match d {
+                Definition::TypeDefinition(TypeDefinition::Object(t)) => {
+                    t.name.eq(SCHEMA_TYPE_NAME)
+                }
+                _ => false,
+            })
+            .map(|d| match d {
+                Definition::TypeDefinition(TypeDefinition::Object(t)) => t,
+                _ => unreachable!(),
+            })
     }
 
     fn get_object_and_interface_type_fields(&self) -> HashMap<&Name, &Vec<Field>> {
