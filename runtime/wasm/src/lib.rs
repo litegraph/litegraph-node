@@ -14,6 +14,8 @@ mod module;
 /// Runtime-agnostic implementation of exports to WASM.
 mod host_exports;
 
+mod gas;
+
 mod error;
 
 use graph::prelude::web3::types::Address;
