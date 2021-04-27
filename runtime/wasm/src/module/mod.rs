@@ -197,6 +197,11 @@ impl WasmInstance {
         self.instance.get_func(func_name).unwrap()
     }
 
+    #[cfg(test)]
+    pub(crate) fn gas_used(&self) -> u64 {
+        self.gas.get().into()
+    }
+
     fn invoke_handler<C>(
         &mut self,
         handler: &str,

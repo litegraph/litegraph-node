@@ -279,10 +279,13 @@ async fn json_conversions() {
     let number_ptr = module.asc_new(number).unwrap();
     let big_int_obj: AscPtr<AscBigInt> = module.invoke_export("testToBigInt", number_ptr);
     let bytes: Vec<u8> = module.asc_get(big_int_obj).unwrap();
+
     assert_eq!(
         scalar::BigInt::from_str(number).unwrap(),
         scalar::BigInt::from_signed_bytes_le(&bytes)
     );
+
+    assert_eq!(module.gas_used(), 184180372);
 }
 
 #[tokio::test]
@@ -307,6 +310,8 @@ async fn json_parsing() {
     let return_value: AscPtr<AscString> = module.invoke_export("handleJsonError", bytes_ptr);
     let output: String = module.asc_get(return_value).unwrap();
     assert_eq!(output, "OK: foo");
+
+    assert_eq!(module.gas_used(), 1236877);
 }
 
 #[tokio::test(threaded_scheduler)]
@@ -522,6 +527,8 @@ async fn big_int_to_hex() {
         u256_max_hex_str,
         "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     );
+
+    assert_eq!(module.gas_used(), 184013403);
 }
 
 #[tokio::test]
@@ -584,6 +591,8 @@ async fn big_int_arithmetic() {
     let result_ptr: AscPtr<AscBigInt> = module.invoke_export2("mod", five, two);
     let result: BigInt = module.asc_get(result_ptr).unwrap();
     assert_eq!(result, BigInt::from(1));
+
+    assert_eq!(module.gas_used(), 184342018);
 }
 
 #[tokio::test]
@@ -607,7 +616,10 @@ async fn bytes_to_base58() {
     let bytes_ptr = module.asc_new(bytes.as_slice()).unwrap();
     let result_ptr: AscPtr<AscString> = module.invoke_export("bytes_to_base58", bytes_ptr);
     let base58: String = module.asc_get(result_ptr).unwrap();
+
     assert_eq!(base58, "QmWmyoMoctfbAaiEs2G46gpeUmhqFRDW6KWo64y5r581Vz");
+
+    assert_eq!(module.gas_used(), 183820465);
 }
 
 #[tokio::test]
@@ -625,6 +637,9 @@ async fn data_source_create() {
         module.instance_ctx_mut().ctx.state.enter_handler();
         module.invoke_export2_void("dataSourceCreate", name, params)?;
         module.instance_ctx_mut().ctx.state.exit_handler();
+
+        assert_eq!(module.gas_used(), 543636483);
+
         Ok(module.take_ctx().ctx.state.drain_created_data_sources())
     };
 
@@ -757,6 +772,8 @@ async fn entity_store() {
         }
         _ => assert!(false, "expected Insert modification"),
     }
+
+    assert_eq!(module.gas_used(), 312058391);
 }
 
 #[tokio::test]
