@@ -37,6 +37,7 @@ async fn abi_array() {
     let vec_obj: AscPtr<Array<AscPtr<AscString>>> = module.asc_new(&*vec).unwrap();
 
     let new_vec_obj: AscPtr<Array<AscPtr<AscString>>> = module.invoke_export("test_array", vec_obj);
+    // let gas = module.instance_ctx().
     let new_vec: Vec<String> = module.asc_get(new_vec_obj).unwrap();
 
     assert_eq!(

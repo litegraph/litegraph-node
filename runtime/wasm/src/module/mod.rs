@@ -12,7 +12,7 @@ use wasmtime::{Memory, Trap};
 
 use crate::error::DeterminismLevel;
 use crate::gas;
-use crate::gas::{GasCounter, SaturatingInto};
+use crate::gas::{Gas, GasCounter, SaturatingInto};
 use crate::host_exports;
 use crate::mapping::MappingContext;
 use anyhow::Error;
@@ -55,6 +55,9 @@ pub(crate) struct WasmInstance {
     // Also this is the only strong reference, so the instance will be dropped once this is dropped.
     // The weak references are circulary held by instance itself through host exports.
     instance_ctx: Rc<RefCell<Option<WasmInstanceContext>>>,
+
+    // A reference to the gas counter used for reporting the gas used.
+    gas: GasCounter,
 }
 
 impl Drop for WasmInstance {
@@ -107,7 +110,7 @@ impl WasmInstance {
         transaction: Arc<Transaction>,
         log: Arc<Log>,
         params: Vec<LogParam>,
-    ) -> Result<BlockState, MappingError> {
+    ) -> Result<(BlockState, Gas), MappingError> {
         let block = self.instance_ctx().ctx.block.clone();
 
         // Prepare an EthereumEvent for the WASM runtime
@@ -147,7 +150,7 @@ impl WasmInstance {
         call: Arc<EthereumCall>,
         inputs: Vec<LogParam>,
         outputs: Vec<LogParam>,
-    ) -> Result<BlockState, MappingError> {
+    ) -> Result<(BlockState, Gas), MappingError> {
         let call = EthereumCallData {
             to: call.to,
             from: call.from,
@@ -168,7 +171,7 @@ impl WasmInstance {
     pub(crate) fn handle_ethereum_block(
         mut self,
         handler_name: &str,
-    ) -> Result<BlockState, MappingError> {
+    ) -> Result<(BlockState, Gas), MappingError> {
         let block = EthereumBlockData::from(self.instance_ctx().ctx.block.as_ref());
 
         // Prepare an EthereumBlock for the WASM runtime
@@ -198,7 +201,7 @@ impl WasmInstance {
         &mut self,
         handler: &str,
         arg: AscPtr<C>,
-    ) -> Result<BlockState, MappingError> {
+    ) -> Result<(BlockState, Gas), MappingError> {
         let func = self
             .instance
             .get_func(handler)
@@ -269,7 +272,8 @@ impl WasmInstance {
             self.instance_ctx_mut().ctx.state.exit_handler();
         }
 
-        Ok(self.take_ctx().ctx.state)
+        let gas = self.gas.get();
+        Ok((self.take_ctx().ctx.state, gas))
     }
 }
 
@@ -573,13 +577,12 @@ impl WasmInstance {
         // link the `gas` function
         // See also e3f03e62-40e4-4f8c-b4a1-d0375cca0b76
         {
-            let host_metrics = host_metrics.cheap_clone();
             let gas = gas.cheap_clone();
             linker.func("gas", "gas", move |gas_used: u32| -> Result<(), Trap> {
-                // Starting the section is probably more expensive than the gas operation itself,
-                // but still we need insight into whether this is relevant to indexing performance.
-                let _section = host_metrics.stopwatch.start_section("host_export_gas");
-
+                // Gas metering has a relevant execution cost cost, being called tens of thousands
+                // of times per handler, but it's not worth having a stopwatch section here because
+                // the cost of measuring would be greater than the cost of `consume_host_fn`. Last
+                // time this was benchmarked it took < 100ns to run.
                 if let Err(e) = gas.consume_host_fn(gas_used.saturating_into()) {
                     deterministic_host_trap.store(true, Ordering::SeqCst);
                     return Err(e.into_trap());
@@ -607,6 +610,7 @@ impl WasmInstance {
         Ok(WasmInstance {
             instance,
             instance_ctx: shared_ctx,
+            gas,
         })
     }
 }
