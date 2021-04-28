@@ -11,13 +11,12 @@ use semver::Version;
 use wasmtime::{Memory, Trap};
 
 use crate::error::DeterminismLevel;
-use crate::gas;
-use crate::gas::{Gas, GasCounter, SaturatingInto};
 use crate::host_exports;
 use crate::mapping::MappingContext;
 use anyhow::Error;
 use ethabi::LogParam;
 use graph::prelude::*;
+use graph::runtime::gas::{self, Gas, GasCounter, SaturatingInto};
 use graph::{components::subgraph::MappingError, runtime::AscPtr};
 use graph::{data::store, runtime::AscHeap};
 use graph::{data::subgraph::schema::SubgraphError, runtime::DeterministicHostError};

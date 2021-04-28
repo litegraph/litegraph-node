@@ -6,6 +6,8 @@
 mod asc_heap;
 mod asc_ptr;
 
+pub mod gas;
+
 pub use asc_heap::{AscHeap, FromAscObj, ToAscObj, TryFromAscObj};
 pub use asc_ptr::AscPtr;
 
