@@ -1564,7 +1564,7 @@ pub async fn triggers_in_block(
     }
 }
 
-async fn get_calls(
+pub(crate) async fn get_calls(
     adapter: &EthereumAdapter,
     logger: Logger,
     subgraph_metrics: Arc<SubgraphEthRpcMetrics>,
@@ -1606,7 +1606,7 @@ async fn get_calls(
     }
 }
 
-fn parse_log_triggers(
+pub(crate) fn parse_log_triggers(
     log_filter: EthereumLogFilter,
     block: &EthereumBlock,
 ) -> Vec<EthereumTrigger> {
@@ -1624,7 +1624,7 @@ fn parse_log_triggers(
         .collect()
 }
 
-fn parse_call_triggers(
+pub(crate) fn parse_call_triggers(
     call_filter: EthereumCallFilter,
     block: &EthereumBlockWithCalls,
 ) -> Vec<EthereumTrigger> {
@@ -1638,7 +1638,7 @@ fn parse_call_triggers(
     }
 }
 
-fn parse_block_triggers(
+pub(crate) fn parse_block_triggers(
     block_filter: EthereumBlockFilter,
     block: &EthereumBlockWithCalls,
 ) -> Vec<EthereumTrigger> {
