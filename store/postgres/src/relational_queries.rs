@@ -12,7 +12,7 @@ use diesel::result::{Error as DieselError, QueryResult};
 use diesel::sql_types::{Array, BigInt, Binary, Bool, Integer, Jsonb, Range, Text};
 use diesel::Connection;
 use lazy_static::lazy_static;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::env;
 use std::fmt::{self, Display};
@@ -25,7 +25,7 @@ use graph::prelude::{
     QueryExecutionError, StoreError, Value,
 };
 use graph::{
-    components::store::EntityType,
+    components::store::{ColumnNames, EntityType},
     data::{schema::FulltextAlgorithm, store::scalar},
 };
 
@@ -73,6 +73,10 @@ lazy_static! {
             })
             .unwrap_or(false)
     };
+
+    /// Those are columns that we always want to fetch from the database.
+    static ref BASE_SQL_COLUMNS: BTreeSet<String> =
+        ["id", "vid"].iter().map(ToString::to_string).collect();
 }
 
 #[derive(Debug)]
@@ -1573,6 +1577,7 @@ pub struct FilterWindow<'a> {
     ids: Vec<String>,
     /// How to filter by a set of parents
     link: TableLink<'a>,
+    column_names: ColumnNames,
 }
 
 impl<'a> FilterWindow<'a> {
@@ -1585,6 +1590,7 @@ impl<'a> FilterWindow<'a> {
             child_type,
             ids,
             link,
+            column_names,
         } = window;
         let table = layout.table_for_entity(&child_type).map(|rc| rc.as_ref())?;
         let query_filter = query_filter
@@ -1596,6 +1602,7 @@ impl<'a> FilterWindow<'a> {
             query_filter,
             ids,
             link,
+            column_names,
         })
     }
 
@@ -1619,7 +1626,7 @@ impl<'a> FilterWindow<'a> {
         // Generate
         //      from unnest({parent_ids}) as p(id)
         //           cross join lateral
-        //           (select *
+        //           (select {column names}
         //              from children c
         //             where p.id = any(c.{parent_field})
         //               and .. other conditions on c ..
@@ -1629,7 +1636,9 @@ impl<'a> FilterWindow<'a> {
 
         out.push_sql("\n/* children_type_a */  from unnest(");
         column.bind_ids(&self.ids, out)?;
-        out.push_sql(") as p(id) cross join lateral (select * from ");
+        out.push_sql(") as p(id) cross join lateral (select ");
+        write_column_names(&self.column_names, out);
+        out.push_sql(" from ");
         out.push_sql(self.table.qualified_name.as_str());
         out.push_sql(" c where ");
         BlockRangeContainsClause::new(&self.table, "c.", block).walk_ast(out.reborrow())?;
@@ -1696,7 +1705,7 @@ impl<'a> FilterWindow<'a> {
         // Generate
         //      from unnest({parent_ids}) as p(id)
         //           cross join lateral
-        //           (select *
+        //           (select {column names}
         //              from children c
         //             where p.id = c.{parent_field}
         //               and .. other conditions on c ..
@@ -1706,7 +1715,9 @@ impl<'a> FilterWindow<'a> {
 
         out.push_sql("\n/* children_type_b */  from unnest(");
         column.bind_ids(&self.ids, out)?;
-        out.push_sql(") as p(id) cross join lateral (select * from ");
+        out.push_sql(") as p(id) cross join lateral (select ");
+        write_column_names(&self.column_names, out);
+        out.push_sql(" from ");
         out.push_sql(self.table.qualified_name.as_str());
         out.push_sql(" c where ");
         BlockRangeContainsClause::new(&self.table, "c.", block).walk_ast(out.reborrow())?;
@@ -1759,7 +1770,7 @@ impl<'a> FilterWindow<'a> {
         //      from rows from (unnest({parent_ids}), reduce_dim({child_id_matrix}))
         //                  as p(id, child_ids)
         //           cross join lateral
-        //           (select *
+        //           (select {column names}
         //              from children c
         //             where c.id = any(p.child_ids)
         //               and .. other conditions on c ..
@@ -1773,7 +1784,9 @@ impl<'a> FilterWindow<'a> {
         out.push_sql("), reduce_dim(");
         self.table.primary_key().push_matrix(&child_ids, out)?;
         out.push_sql(")) as p(id, child_ids)");
-        out.push_sql(" cross join lateral (select * from ");
+        out.push_sql(" cross join lateral (select ");
+        write_column_names(&self.column_names, out);
+        out.push_sql(" from ");
         out.push_sql(self.table.qualified_name.as_str());
         out.push_sql(" c where ");
         BlockRangeContainsClause::new(&self.table, "c.", block).walk_ast(out.reborrow())?;
@@ -1878,7 +1891,7 @@ impl<'a> FilterWindow<'a> {
 pub enum FilterCollection<'a> {
     /// Collection made from all entities in a table; each entry is the table
     /// and the filter to apply to it, checked and bound to that table
-    All(Vec<(&'a Table, Option<QueryFilter<'a>>)>),
+    All(Vec<(&'a Table, Option<QueryFilter<'a>>, ColumnNames)>),
     /// Collection made from windows of the same or different entity types
     SingleWindow(FilterWindow<'a>),
     MultiWindow(Vec<FilterWindow<'a>>, Vec<String>),
@@ -1898,7 +1911,7 @@ impl<'a> FilterCollection<'a> {
                 // to it
                 let entities = entities
                     .iter()
-                    .map(|entity| {
+                    .map(|(entity, column_names)| {
                         layout
                             .table_for_entity(&entity)
                             .map(|rc| rc.as_ref())
@@ -1906,7 +1919,7 @@ impl<'a> FilterCollection<'a> {
                                 filter
                                     .map(|filter| QueryFilter::new(filter, table))
                                     .transpose()
-                                    .map(|filter| (table, filter))
+                                    .map(|filter| (table, filter, column_names.clone()))
                             })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -2258,7 +2271,7 @@ impl<'a> FilterQuery<'a> {
     ///
     ///   select '..' as entity, to_jsonb(e.*) as data
     ///     from
-    ///       (select *
+    ///       (select {column names}
     ///          from table c
     ///         where block_range @> $block
     ///           and filter
@@ -2268,9 +2281,11 @@ impl<'a> FilterQuery<'a> {
         table: &Table,
         filter: &Option<QueryFilter>,
         mut out: AstPass<Pg>,
+        column_names: &ColumnNames,
     ) -> QueryResult<()> {
         Self::select_entity_and_data(table, &mut out);
-        out.push_sql(" from (select * ");
+        out.push_sql(" from (select ");
+        write_column_names(&column_names, &mut out);
         self.filtered_rows(table, filter, out.reborrow())?;
         out.push_sql("\n ");
         self.sort_key.order_by(&mut out)?;
@@ -2307,7 +2322,7 @@ impl<'a> FilterQuery<'a> {
     /// No windowing, but multiple entity types
     fn query_no_window(
         &self,
-        entities: &Vec<(&Table, Option<QueryFilter>)>,
+        entities: &Vec<(&Table, Option<QueryFilter>, ColumnNames)>,
         mut out: AstPass<Pg>,
     ) -> QueryResult<()> {
         // We have multiple tables which might have different schemas since
@@ -2327,7 +2342,8 @@ impl<'a> FilterQuery<'a> {
         //    ...
         //    order by {sort_key}
         //    limit n offset m)
-        // select m.entity, to_jsonb(c.*) as data, c.id, c.{sort_key}
+        //
+        // select m.entity, to_jsonb({column names}) as data, c.id, c.{sort_key}
         //   from {table} c, matches m
         //  where c.vid = m.vid and m.entity = '...'
         //  union all
@@ -2336,7 +2352,7 @@ impl<'a> FilterQuery<'a> {
 
         // Step 1: build matches CTE
         out.push_sql("with matches as (");
-        for (i, (table, filter)) in entities.iter().enumerate() {
+        for (i, (table, filter, _column_names)) in entities.iter().enumerate() {
             if i > 0 {
                 out.push_sql("\nunion all\n");
             }
@@ -2357,11 +2373,13 @@ impl<'a> FilterQuery<'a> {
         out.push_sql(")\n");
 
         // Step 2: convert to JSONB
-        for (i, (table, _)) in entities.iter().enumerate() {
+        for (i, (table, _, column_names)) in entities.iter().enumerate() {
             if i > 0 {
                 out.push_sql("\nunion all\n");
             }
-            out.push_sql("select m.entity, to_jsonb(c.*) as data, c.id");
+            out.push_sql("select m.entity, ");
+            jsonb_build_object(column_names, "c", &mut out);
+            out.push_sql(" as data, c.id");
             self.sort_key.select(&mut out)?;
             out.push_sql("\n  from ");
             out.push_sql(table.qualified_name.as_str());
@@ -2435,16 +2453,21 @@ impl<'a> FilterQuery<'a> {
         // the hassle of making `Table` hashable
         let unique_child_tables = windows
             .iter()
-            .map(|window| (&window.table.qualified_name, &window.table.object))
+            .map(|window| {
+                (
+                    &window.table.qualified_name,
+                    &window.table.object,
+                    &window.column_names,
+                )
+            })
             .collect::<HashSet<_>>();
-        for (i, (table_name, object)) in unique_child_tables.into_iter().enumerate() {
+        for (i, (table_name, object, column_names)) in unique_child_tables.into_iter().enumerate() {
             if i > 0 {
                 out.push_sql("\nunion all\n");
             }
-            out.push_sql(
-                "select m.*, \
-                 to_jsonb(c.*) || jsonb_build_object('g$parent_id', m.g$parent_id) as data",
-            );
+            out.push_sql("select m.*, ");
+            jsonb_build_object(&column_names, "c", &mut out);
+            out.push_sql("|| jsonb_build_object('g$parent_id', m.g$parent_id) as data");
             out.push_sql("\n  from ");
             out.push_sql(table_name.as_str());
             out.push_sql(" c, matches m\n where c.vid = m.vid and m.entity = '");
@@ -2479,10 +2502,10 @@ impl<'a> QueryFragment<Pg> for FilterQuery<'a> {
         match &self.collection {
             FilterCollection::All(entities) => {
                 if entities.len() == 1 {
-                    let (table, filter) = entities
+                    let (table, filter, column_names) = entities
                         .first()
                         .expect("a query always uses at least one table");
-                    self.query_no_window_one_entity(table, filter, out)
+                    self.query_no_window_one_entity(table, filter, out, column_names)
                 } else {
                     self.query_no_window(entities, out)
                 }
@@ -2854,4 +2877,47 @@ impl<'a, Conn> RunQueryDsl<Conn> for CopyEntityBatchQuery<'a> {}
 pub struct CopyVid {
     #[sql_type = "BigInt"]
     pub vid: i64,
+}
+
+fn write_column_names(column_names: &ColumnNames, out: &mut AstPass<Pg>) {
+    match column_names {
+        ColumnNames::All => out.push_sql(" * "),
+        ColumnNames::Select(column_names) => {
+            let mut iterator = column_names.union(&BASE_SQL_COLUMNS).into_iter().peekable();
+            while let Some(column_name) = iterator.next() {
+                out.push_sql(column_name);
+                if iterator.peek().is_some() {
+                    out.push_sql(", ");
+                }
+            }
+        }
+    }
+}
+
+fn jsonb_build_object(column_names: &ColumnNames, table_identifier: &str, out: &mut AstPass<Pg>) {
+    match column_names {
+        ColumnNames::All => {
+            out.push_sql(r#"to_jsonb(""#);
+            out.push_sql(table_identifier);
+            out.push_sql(r#"".*)"#);
+        }
+        ColumnNames::Select(column_names) => {
+            out.push_sql("jsonb_build_object(");
+            let mut iterator = column_names.union(&BASE_SQL_COLUMNS).into_iter().peekable();
+            while let Some(column_name) = iterator.next() {
+                // field name as json key
+                out.push_sql("'");
+                out.push_sql(column_name);
+                out.push_sql("', ");
+                // column identifier
+                out.push_sql(table_identifier);
+                out.push_sql(".");
+                out.push_sql(column_name);
+                if iterator.peek().is_some() {
+                    out.push_sql(", ");
+                }
+            }
+            out.push_sql(")");
+        }
+    }
 }

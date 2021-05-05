@@ -1,21 +1,21 @@
 use futures::stream::poll_fn;
 use futures::{Async, Poll, Stream};
 use graphql_parser::schema as s;
+use inflector::Inflector;
 use lazy_static::lazy_static;
 use mockall::predicate::*;
 use mockall::*;
 use serde::{Deserialize, Serialize};
 use stable_hash::prelude::*;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fmt;
+use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    fmt::Display,
-};
 use thiserror::Error;
 use web3::types::{Address, H256};
 
@@ -310,6 +310,7 @@ pub struct EntityWindow {
     pub ids: Vec<String>,
     /// How to get the parent id
     pub link: EntityLink,
+    pub column_names: ColumnNames,
 }
 
 /// The base collections from which we are going to get entities for use in
@@ -320,7 +321,7 @@ pub struct EntityWindow {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EntityCollection {
     /// Use all entities of the given types
-    All(Vec<EntityType>),
+    All(Vec<(EntityType, ColumnNames)>),
     /// Use entities according to the windows. The set of entities that we
     /// apply order and range to is formed by taking all entities matching
     /// the window, and grouping them by the attribute of the window. Entities
@@ -330,6 +331,35 @@ pub enum EntityCollection {
     /// column `b`; they will be grouped by using `A.a` and `B.b` as the keys
     Window(Vec<EntityWindow>),
 }
+
+impl EntityCollection {
+    /// This will drain the whole collection but will only yield a hashmap of
+    /// `EntityTypes` mapped to their `ColumnNames`.
+    pub fn drain_for_entity_types_and_column_name(&mut self) -> HashMap<EntityType, ColumnNames> {
+        let mut map = HashMap::new();
+        match self {
+            EntityCollection::All(pairs) => {
+                pairs.drain(..).for_each(|(entity_type, column_names)| {
+                    map.insert(entity_type, column_names);
+                })
+            }
+            EntityCollection::Window(windows) => windows.drain(..).for_each(
+                |EntityWindow {
+                     child_type,
+                     column_names,
+                     ..
+                 }| match map.entry(child_type) {
+                    Entry::Occupied(mut entry) => entry.get_mut().extend(column_names),
+                    Entry::Vacant(entry) => {
+                        entry.insert(column_names);
+                    }
+                },
+            ),
+        }
+        map
+    }
+}
+
 /// The type we use for block numbers. This has to be a signed integer type
 /// since Postgres does not support unsigned integer types. But 2G ought to
 /// be enough for everybody
@@ -437,7 +467,10 @@ impl EntityQuery {
                             }
                         };
                         self.filter = Some(filter.and_maybe(self.filter));
-                        self.collection = EntityCollection::All(vec![window.child_type.to_owned()]);
+                        self.collection = EntityCollection::All(vec![(
+                            window.child_type.to_owned(),
+                            window.column_names.clone(),
+                        )]);
                     }
                 }
             }
@@ -1579,8 +1612,6 @@ impl EntityCache {
     }
 
     fn entity_op(&mut self, key: EntityKey, op: EntityOp) {
-        use std::collections::hash_map::Entry;
-
         let updates = match self.in_handler {
             true => &mut self.handler_updates,
             false => &mut self.updates,
@@ -1713,6 +1744,78 @@ impl LfuCache<EntityKey, Option<Entity>> {
                 Ok(entity)
             }
             Some(data) => Ok(data.to_owned()),
+        }
+    }
+}
+
+/// Determines which columns should be selected in a table.
+#[derive(Clone, Debug, Eq, Hash)]
+pub enum ColumnNames {
+    /// Select all columns. Equivalent to a `"SELECT *"`.
+    All,
+    /// Individual column names to be selected.
+    Select(BTreeSet<String>),
+}
+
+impl ColumnNames {
+    pub fn update(&mut self, field: &q::Field) {
+        // ignore "meta" field names
+        if field.name.starts_with("__") {
+            return;
+        }
+        match self {
+            ColumnNames::All => {
+                let mut set = BTreeSet::new();
+                set.insert(field.name.to_snake_case());
+                *self = ColumnNames::Select(set)
+            }
+            ColumnNames::Select(set) => {
+                set.insert(field.name.to_snake_case());
+            }
+        }
+    }
+}
+
+impl Default for ColumnNames {
+    fn default() -> Self {
+        ColumnNames::All
+    }
+}
+
+impl PartialEq for ColumnNames {
+    fn eq(&self, other: &Self) -> bool {
+        use ColumnNames::*;
+        match (self, other) {
+            (All, All) => true,
+            (All, Select(_)) | (Select(_), All) => false,
+            (Select(a), Select(b)) => a == b,
+        }
+    }
+}
+
+impl Extend<String> for ColumnNames {
+    fn extend<T: IntoIterator<Item = String>>(&mut self, iter: T) {
+        match self {
+            ColumnNames::All => {
+                let mut set: BTreeSet<String> = BTreeSet::new();
+                for item in iter {
+                    set.insert(item);
+                }
+                *self = ColumnNames::Select(set)
+            }
+            ColumnNames::Select(set) => set.extend(iter),
+        }
+    }
+}
+
+impl IntoIterator for ColumnNames {
+    type Item = String;
+    type IntoIter = Box<dyn Iterator<Item = Self::Item>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            ColumnNames::All => Box::new(std::iter::empty::<String>()),
+            ColumnNames::Select(set) => Box::new(set.into_iter()),
         }
     }
 }

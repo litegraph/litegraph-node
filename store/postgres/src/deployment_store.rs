@@ -24,9 +24,9 @@ use graph::components::subgraph::ProofOfIndexingFinisher;
 use graph::data::subgraph::schema::{SubgraphError, POI_OBJECT};
 use graph::prelude::{
     anyhow, debug, futures03, info, o, web3, ApiSchema, BlockNumber, BlockPtr, CheapClone,
-    DeploymentHash, DeploymentState, DynTryFuture, Entity, EntityKey, EntityModification,
-    EntityQuery, Error, Logger, QueryExecutionError, Schema, StopwatchMetrics, StoreError,
-    StoreEvent, Value, BLOCK_NUMBER_MAX,
+    ColumnNames, DeploymentHash, DeploymentState, DynTryFuture, Entity, EntityKey,
+    EntityModification, EntityQuery, Error, Logger, QueryExecutionError, Schema, StopwatchMetrics,
+    StoreError, StoreEvent, Value, BLOCK_NUMBER_MAX,
 };
 
 use graph_graphql::prelude::api_schema;
@@ -733,7 +733,11 @@ impl DeploymentStore {
                         let query = EntityQuery::new(
                             site4.deployment.clone(),
                             block.number.try_into().unwrap(),
-                            EntityCollection::All(vec![POI_OBJECT.cheap_clone()]),
+                            EntityCollection::All(vec![(
+                                POI_OBJECT.cheap_clone(),
+                                // TODO: discover how we should handle the ColumnNames in this case
+                                ColumnNames::All,
+                            )]),
                         );
                         let entities = store
                             .execute_query::<Entity>(conn, site4, query)

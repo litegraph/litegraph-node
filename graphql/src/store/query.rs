@@ -5,6 +5,7 @@ use graph::prelude::*;
 use graph::{components::store::EntityType, data::graphql::ObjectOrInterface};
 
 use crate::schema::ast as sast;
+use crate::store::prefetch::ObjectCondition;
 
 #[derive(Debug)]
 enum OrderDirection {
@@ -19,17 +20,24 @@ pub fn build_query<'a>(
     entity: impl Into<ObjectOrInterface<'a>>,
     block: BlockNumber,
     arguments: &HashMap<&str, q::Value>,
-    types_for_interface: &BTreeMap<EntityType, Vec<s::ObjectType>>,
+    types_for_interface: &'a BTreeMap<EntityType, Vec<s::ObjectType>>,
     max_first: u32,
     max_skip: u32,
+    mut column_names: HashMap<ObjectCondition<'a>, ColumnNames>,
 ) -> Result<EntityQuery, QueryExecutionError> {
     let entity = entity.into();
     let entity_types = EntityCollection::All(match &entity {
-        ObjectOrInterface::Object(object) => vec![(*object).into()],
+        ObjectOrInterface::Object(object) => {
+            let selected_columns = column_names.remove(&(*object).into()).unwrap_or_default();
+            vec![((*object).into(), selected_columns)]
+        }
         ObjectOrInterface::Interface(interface) => types_for_interface
             [&EntityType::from(*interface)]
             .iter()
-            .map(Into::into)
+            .map(|o| {
+                let selected_columns = column_names.remove(&o.into()).unwrap_or_default();
+                (o.into(), selected_columns)
+            })
             .collect(),
     });
     let mut query = EntityQuery::new(parse_subgraph_id(entity)?, block, entity_types)
